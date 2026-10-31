@@ -1,4 +1,4 @@
-# 🛡️ Scam Shield
+.# 🛡️ Scam Shield
 
 > **A private, on-device scam and spam detector that explains itself.**  
 > *Your device's own scam bodyguard. Private by design, clear in plain language, and it helps you protect your family too.*
@@ -50,6 +50,15 @@ MISSED SCAMS:
 ```
 
 > **Honesty in Evaluation**: The only missed scam is a polite social-engineering trick without trigger words ("sent money by mistake"). Standard bank messages containing "Do not share OTP" produce **0% false alarms** due to pre-cleaning safeguards.
+  ## Evaluation
+
+`python evaluate.py` runs the rules on `tests.csv` (20 scams, 10 genuine messages).
+Current result: 18/20 scams caught, 0/10 false alarms. ...
+`python evaluate.py` runs the rules on `tests.csv` (35 scams, 20 genuine messages).
+Current result: 34/35 scams caught, 1/20 false alarms. The rules were tuned on this set, so
+treat the numbers as a sanity check, not a benchmark. Known weak spots: polite scams with no
+trigger words (such as "I sent money by mistake, please return it") and genuine family money
+requests, which get flagged as suspicious.
 
 ---
 
@@ -107,5 +116,4 @@ Open [http://localhost:8501](http://localhost:8501) in your browser.
 ## ⚖️ Transparency Statement
 
 * **Runtime**: The application runs 100% locally on the device. It uses only open-weights models served locally through Ollama (`gemma3`). No cloud APIs or external web requests are executed while the product runs.
-* **License**: MIT License.
-
+* **License**: MIT License
