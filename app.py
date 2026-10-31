@@ -1,5 +1,8 @@
 """Scam Shield: private, on-device scam detector. Run with: streamlit run app.py"""
+import hashlib
+import io
 import re
+import wave
 import streamlit as st
 from explain import MODEL, explain, warmup
 from rules import analyze
@@ -70,15 +73,42 @@ def load_whisper():
         return None
 
 
-def transcribe_audio(audio_source):
-    """Transcribe audio from st.audio_input or st.file_uploader on-device."""
+def is_audio_too_short(audio_bytes, min_duration=0.5):
+    """Check if audio is empty or under about min_duration seconds."""
+    if not audio_bytes or len(audio_bytes) == 0:
+        return True
+    try:
+        with wave.open(io.BytesIO(audio_bytes), "rb") as wf:
+            frames = wf.getnframes()
+            rate = wf.getframerate()
+            if rate > 0:
+                return (frames / float(rate)) < min_duration
+    except Exception:
+        pass
+    try:
+        import av
+        with av.open(io.BytesIO(audio_bytes)) as container:
+            if container.duration is not None:
+                duration = float(container.duration / av.time.AV_TIME_BASE)
+                return duration < min_duration
+            if container.streams.audio:
+                stream = container.streams.audio[0]
+                if stream.duration is not None and stream.time_base is not None:
+                    duration = float(stream.duration * stream.time_base)
+                    return duration < min_duration
+    except Exception:
+        pass
+    return len(audio_bytes) < 4000
+
+
+def transcribe_audio(audio_bytes):
+    """Transcribe audio from fresh bytes wrapped in a new io.BytesIO on-device."""
     model = load_whisper()
     if model is None:
         return None, "Whisper speech model could not be loaded on this device."
     try:
-        if hasattr(audio_source, "seek"):
-            audio_source.seek(0)
-        segments, _ = model.transcribe(audio_source, vad_filter=True)
+        fresh_stream = io.BytesIO(audio_bytes)
+        segments, _ = model.transcribe(fresh_stream, vad_filter=True)
         text = " ".join(seg.text for seg in segments).strip()
         return text, None
     except Exception as e:
@@ -204,13 +234,24 @@ elif mode == "Voice check":
     )
     st.caption("Voice is processed on this device. Nothing is uploaded.")
 
+    if "recorder_key_counter" not in st.session_state:
+        st.session_state["recorder_key_counter"] = 0
+
+    recorder_key = f"voice_recorder_{st.session_state['recorder_key_counter']}"
+
     tab_rec, tab_file = st.tabs(["🎤 Record Microphone", "📁 Upload Audio File"])
-    audio_source = None
+    audio_bytes = None
+    source_type = None
 
     with tab_rec:
-        rec = st.audio_input("Record suspicious call or voice message:")
-        if rec is not None:
-            audio_source = rec
+        rec = st.audio_input("Record suspicious call or voice message:", key=recorder_key)
+        if st.button("🔄 Record again"):
+            st.session_state["recorder_key_counter"] += 1
+            st.session_state.pop("voice_transcript", None)
+            st.session_state.pop("voice_audio_hash", None)
+            st.session_state.pop("last_source_type", None)
+            st.session_state.pop("voice_checked_once", None)
+            st.rerun()
 
     with tab_file:
         uploaded = st.file_uploader(
@@ -218,36 +259,67 @@ elif mode == "Voice check":
             type=["wav", "mp3", "m4a"],
             help="Supports WAV, MP3, or M4A audio formats",
         )
-        if uploaded is not None and audio_source is None:
-            audio_source = uploaded
 
-    if audio_source is not None:
-        source_id = getattr(audio_source, "file_id", None) or getattr(audio_source, "name", "rec")
-        if st.session_state.get("transcribed_id") != source_id:
-            with st.spinner("Transcribing on this device..."):
-                transcript, err = transcribe_audio(audio_source)
-                if err:
-                    st.error(f"Error during transcription: {err}")
-                    st.session_state["voice_text"] = ""
-                else:
-                    st.session_state["voice_text"] = transcript or ""
-                st.session_state["transcribed_id"] = source_id
+    rec_bytes = rec.getvalue() if rec is not None else None
+    up_bytes = uploaded.getvalue() if uploaded is not None else None
 
-        current_transcript = st.session_state.get("voice_text", "")
-        if current_transcript:
-            st.subheader("Transcribed Message")
-            st.caption("Review or edit the transcript below:")
-            edited_text = st.text_area(
-                "Transcript:",
-                value=current_transcript,
-                height=120,
-                key="voice_transcript_area",
-            )
-            if st.button("Check Voice Message", type="primary", use_container_width=True) or not st.session_state.get("voice_checked_once"):
-                st.session_state["voice_checked_once"] = True
-                if edited_text.strip():
-                    display_results(edited_text.strip())
-                else:
-                    st.warning("Please provide or edit the message text to check.")
+    # Handle source selection cleanly
+    if rec_bytes and up_bytes:
+        rec_hash = hashlib.md5(rec_bytes).hexdigest()
+        up_hash = hashlib.md5(up_bytes).hexdigest()
+        current_hash = st.session_state.get("voice_audio_hash")
+        if up_hash != current_hash and rec_hash == current_hash:
+            audio_bytes = up_bytes
+            source_type = "upload"
+        elif rec_hash != current_hash and up_hash == current_hash:
+            audio_bytes = rec_bytes
+            source_type = "rec"
         else:
-            st.info("No speech detected in audio. Please speak clearly into the microphone or upload an audio recording.")
+            if st.session_state.get("last_source_type") == "upload":
+                audio_bytes = up_bytes
+                source_type = "upload"
+            else:
+                audio_bytes = rec_bytes
+                source_type = "rec"
+    elif rec_bytes:
+        audio_bytes = rec_bytes
+        source_type = "rec"
+    elif up_bytes:
+        audio_bytes = up_bytes
+        source_type = "upload"
+
+    if audio_bytes is not None:
+        if is_audio_too_short(audio_bytes):
+            st.warning("No audio captured, please record again")
+        else:
+            audio_hash = hashlib.md5(audio_bytes).hexdigest()
+            if st.session_state.get("voice_audio_hash") != audio_hash:
+                with st.spinner("Transcribing on this device..."):
+                    transcript, err = transcribe_audio(audio_bytes)
+                    if err:
+                        st.error(f"Error during transcription: {err}")
+                        st.session_state["voice_transcript"] = ""
+                    else:
+                        st.session_state["voice_transcript"] = transcript or ""
+                    st.session_state["voice_audio_hash"] = audio_hash
+                    st.session_state["last_source_type"] = source_type
+                    st.session_state["voice_checked_once"] = False
+
+            current_transcript = st.session_state.get("voice_transcript", "")
+            if current_transcript:
+                st.subheader("Transcribed Message")
+                st.caption("Review or edit the transcript below:")
+                edited_text = st.text_area(
+                    "Transcript:",
+                    value=current_transcript,
+                    height=120,
+                    key=f"voice_transcript_area_{audio_hash[:8]}",
+                )
+                if st.button("Check Voice Message", type="primary", use_container_width=True) or not st.session_state.get("voice_checked_once"):
+                    st.session_state["voice_checked_once"] = True
+                    if edited_text.strip():
+                        display_results(edited_text.strip())
+                    else:
+                        st.warning("Please provide or edit the message text to check.")
+            else:
+                st.info("No speech detected in audio. Please speak clearly into the microphone or upload an audio recording.")
