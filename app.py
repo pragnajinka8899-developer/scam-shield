@@ -3,6 +3,8 @@ import hashlib
 import io
 import re
 import wave
+import numpy as np
+import cv2
 import streamlit as st
 from explain import MODEL, explain, warmup
 from rules import analyze
@@ -115,9 +117,64 @@ def transcribe_audio(audio_bytes):
         return None, f"Transcription failed: {str(e)}"
 
 
-def display_results(text):
-    """Render verdict banner, metrics, flags, explanation, and family warning."""
+def decode_qr(image_bytes):
+    """Decode a QR code from raw image bytes using OpenCV. Returns decoded text or None."""
+    try:
+        if not image_bytes:
+            return None
+        arr = np.frombuffer(image_bytes, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if img is None:
+            return None
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        variants = [img]
+        for scale in (1.0, 2.0, 0.5, 3.0):
+            g = gray if scale == 1.0 else cv2.resize(
+                gray, None, fx=scale, fy=scale,
+                interpolation=cv2.INTER_CUBIC if scale > 1 else cv2.INTER_AREA)
+            variants.append(g)
+            variants.append(cv2.copyMakeBorder(g, 40, 40, 40, 40, cv2.BORDER_CONSTANT, value=255))
+            variants.append(cv2.adaptiveThreshold(
+                g, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10))
+            variants.append(cv2.GaussianBlur(g, (3, 3), 0))
+
+        detectors = []
+        if hasattr(cv2, "QRCodeDetectorAruco"):  # much better on photos of screens
+            detectors.append(cv2.QRCodeDetectorAruco())
+        detectors.append(cv2.QRCodeDetector())
+
+        for detector in detectors:
+            for v in variants:
+                try:
+                    data, _, _ = detector.detectAndDecode(v)
+                except cv2.error:
+                    continue
+                if data:
+                    return data
+        return None
+    except Exception:
+        return None
+
+
+def display_results(text, extra_flags=None, skip_llm=False):
+    """Render verdict banner, metrics, flags, explanation, and family warning.
+
+    Args:
+        text: The message text to analyze.
+        extra_flags: Optional list of {"flag", "match"} dicts to append after rule analysis.
+        skip_llm: If True, use built-in fallback instead of the local LLM (for instant modes).
+    """
     result = analyze(text)
+    if extra_flags:
+        for ef in extra_flags:
+            result["flags"].append(ef)
+            result["score"] = min(result["score"] + ef.get("weight", 0), 100)
+        # Re-evaluate level after extra flags
+        if result["score"] >= 50:
+            result["level"] = "HIGH RISK"
+        elif result["score"] >= 25:
+            result["level"] = "SUSPICIOUS"
     level = result["level"]
     score = result["score"]
     card = VERDICT_CARDS[level]
@@ -163,9 +220,14 @@ def display_results(text):
     else:
         st.info("No suspicious keywords, urgency traps, or secret requests detected.")
 
-    # Plain language explanation from local LLM
-    with st.spinner("Analyzing with local open-source model..."):
-        info = explain(text, result)
+    if skip_llm:
+        # Use built-in fallback for instant offline modes (e.g., QR scan)
+        from explain import _fallback
+        info = _fallback(result)
+    else:
+        # Plain language explanation from local LLM
+        with st.spinner("Analyzing with local open-source model..."):
+            info = explain(text, result)
 
     st.subheader("💡 Why this verdict?")
     st.write(info["explanation"])
@@ -195,7 +257,7 @@ with st.sidebar:
         st.warning("Local model offline. Using fast built-in fallbacks.")
 
     st.markdown("---")
-    mode = st.radio("Mode", ["Check a message", "Voice check"], index=0)
+    mode = st.radio("Mode", ["Check a message", "Scan a QR code", "Voice check"], index=0)
 
     if mode == "Check a message":
         choice = st.selectbox(
@@ -225,6 +287,51 @@ if mode == "Check a message":
 
     if (check_clicked or choice != "(write your own)") and text.strip():
         display_results(text.strip())
+
+elif mode == "Scan a QR code":
+    st.title("📷 Scan a QR Code")
+    st.markdown(
+        "**Private, on-device QR scanner.** "
+        "Check suspicious QR codes from screenshots or your camera. Instant, no model needed."
+    )
+    st.caption("Images are processed on this device. Nothing is uploaded.")
+
+    tab_upload, tab_camera = st.tabs(["🖼️ Upload Image", "📸 Camera"])
+    image_bytes = None
+
+    with tab_upload:
+        qr_file = st.file_uploader(
+            "Upload a QR code image:",
+            type=["png", "jpg", "jpeg"],
+            help="Supports PNG and JPEG images",
+        )
+        if qr_file is not None:
+            image_bytes = qr_file.getvalue()
+
+    with tab_camera:
+        cam = st.camera_input("Take a photo of the QR code:")
+        if cam is not None and image_bytes is None:
+            image_bytes = cam.getvalue()
+
+    if image_bytes is not None:
+        st.image(image_bytes, caption="Uploaded image", use_container_width=True)
+        decoded = decode_qr(image_bytes)
+        if decoded is None:
+            st.warning("No QR code found in this image. Please upload a clear photo of a QR code.")
+        else:
+            st.subheader("QR Code Content")
+            st.code(decoded, language=None, wrap_lines=True)
+
+            # Check for UPI payment QR (extra flag)
+            extra_flags = []
+            if decoded.strip().lower().startswith("upi://pay"):
+                extra_flags.append({
+                    "flag": "UPI payment QR",
+                    "match": "A QR code is only for paying. Never scan one to RECEIVE money.",
+                    "weight": 30,
+                })
+
+            display_results(decoded, extra_flags=extra_flags, skip_llm=True)
 
 elif mode == "Voice check":
     st.title("🎙️ Voice Check")
