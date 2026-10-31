@@ -61,42 +61,32 @@ def load_model():
     return warmup()
 
 
-model_ready = load_model()
+@st.cache_resource
+def load_whisper():
+    try:
+        from faster_whisper import WhisperModel
+        return WhisperModel("base", device="cpu", compute_type="int8")
+    except Exception:
+        return None
 
-with st.sidebar:
-    st.header("🛡️ Scam Shield")
-    st.caption("Your device's private scam bodyguard")
-    st.markdown("🔒 **100% On-Device**\nNothing leaves this computer.")
 
-    if model_ready:
-        st.success(f"Local model ready: `{MODEL}`")
-    else:
-        st.warning("Local model offline. Using fast built-in fallbacks.")
+def transcribe_audio(audio_source):
+    """Transcribe audio from st.audio_input or st.file_uploader on-device."""
+    model = load_whisper()
+    if model is None:
+        return None, "Whisper speech model could not be loaded on this device."
+    try:
+        if hasattr(audio_source, "seek"):
+            audio_source.seek(0)
+        segments, _ = model.transcribe(audio_source, vad_filter=True)
+        text = " ".join(seg.text for seg in segments).strip()
+        return text, None
+    except Exception as e:
+        return None, f"Transcription failed: {str(e)}"
 
-    st.markdown("---")
-    choice = st.selectbox(
-        "Try sample message:",
-        ["(write your own)"] + list(SAMPLES.keys()),
-        index=0,
-    )
 
-st.title("🛡️ Scam Shield")
-st.markdown(
-    "**Private, on-device scam detection.** "
-    "Check suspicious SMS, WhatsApp, or email messages instantly without uploading private data to the cloud."
-)
-
-text = st.text_area(
-    "Paste message to check:",
-    value=SAMPLES.get(choice, ""),
-    height=140,
-    key=f"msg::{choice}",
-    placeholder="Paste a suspicious SMS, WhatsApp message or email here...",
-)
-
-check_clicked = st.button("Check Message", type="primary", use_container_width=True)
-
-if (check_clicked or choice != "(write your own)") and text.strip():
+def display_results(text):
+    """Render verdict banner, metrics, flags, explanation, and family warning."""
     result = analyze(text)
     level = result["level"]
     score = result["score"]
@@ -161,3 +151,103 @@ if (check_clicked or choice != "(write your own)") and text.strip():
     who = f"{MODEL} via Ollama" if info.get("source") == "model" else "built-in safety rules"
     st.caption(f"Explanation generated locally by {who}. Scam Shield is an assistant, not a guarantee.")
 
+
+model_ready = load_model()
+
+with st.sidebar:
+    st.header("🛡️ Scam Shield")
+    st.caption("Your device's private scam bodyguard")
+    st.markdown("🔒 **100% On-Device**\nNothing leaves this computer.")
+
+    if model_ready:
+        st.success(f"Local model ready: `{MODEL}`")
+    else:
+        st.warning("Local model offline. Using fast built-in fallbacks.")
+
+    st.markdown("---")
+    mode = st.radio("Mode", ["Check a message", "Voice check"], index=0)
+
+    if mode == "Check a message":
+        choice = st.selectbox(
+            "Try sample message:",
+            ["(write your own)"] + list(SAMPLES.keys()),
+            index=0,
+        )
+    else:
+        choice = "(write your own)"
+
+if mode == "Check a message":
+    st.title("🛡️ Scam Shield")
+    st.markdown(
+        "**Private, on-device scam detection.** "
+        "Check suspicious SMS, WhatsApp, or email messages instantly without uploading private data to the cloud."
+    )
+
+    text = st.text_area(
+        "Paste message to check:",
+        value=SAMPLES.get(choice, ""),
+        height=140,
+        key=f"msg::{choice}",
+        placeholder="Paste a suspicious SMS, WhatsApp message or email here...",
+    )
+
+    check_clicked = st.button("Check Message", type="primary", use_container_width=True)
+
+    if (check_clicked or choice != "(write your own)") and text.strip():
+        display_results(text.strip())
+
+elif mode == "Voice check":
+    st.title("🎙️ Voice Check")
+    st.markdown(
+        "**Private, on-device voice scam detection.** "
+        "Check suspicious phone calls or voice notes directly from your microphone or audio files."
+    )
+    st.caption("Voice is processed on this device. Nothing is uploaded.")
+
+    tab_rec, tab_file = st.tabs(["🎤 Record Microphone", "📁 Upload Audio File"])
+    audio_source = None
+
+    with tab_rec:
+        rec = st.audio_input("Record suspicious call or voice message:")
+        if rec is not None:
+            audio_source = rec
+
+    with tab_file:
+        uploaded = st.file_uploader(
+            "Upload audio file:",
+            type=["wav", "mp3", "m4a"],
+            help="Supports WAV, MP3, or M4A audio formats",
+        )
+        if uploaded is not None and audio_source is None:
+            audio_source = uploaded
+
+    if audio_source is not None:
+        source_id = getattr(audio_source, "file_id", None) or getattr(audio_source, "name", "rec")
+        if st.session_state.get("transcribed_id") != source_id:
+            with st.spinner("Transcribing on this device..."):
+                transcript, err = transcribe_audio(audio_source)
+                if err:
+                    st.error(f"Error during transcription: {err}")
+                    st.session_state["voice_text"] = ""
+                else:
+                    st.session_state["voice_text"] = transcript or ""
+                st.session_state["transcribed_id"] = source_id
+
+        current_transcript = st.session_state.get("voice_text", "")
+        if current_transcript:
+            st.subheader("Transcribed Message")
+            st.caption("Review or edit the transcript below:")
+            edited_text = st.text_area(
+                "Transcript:",
+                value=current_transcript,
+                height=120,
+                key="voice_transcript_area",
+            )
+            if st.button("Check Voice Message", type="primary", use_container_width=True) or not st.session_state.get("voice_checked_once"):
+                st.session_state["voice_checked_once"] = True
+                if edited_text.strip():
+                    display_results(edited_text.strip())
+                else:
+                    st.warning("Please provide or edit the message text to check.")
+        else:
+            st.info("No speech detected in audio. Please speak clearly into the microphone or upload an audio recording.")
