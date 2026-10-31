@@ -90,10 +90,9 @@ SAFE_WARNING = re.compile(
     r"\b(do not|don't|dont|never|not to)\s+(share|disclose|give|reveal)\b[^.\n]*", re.IGNORECASE
 )
 
-# Exception for legitimate OTP sharing (e.g., driver, rider, delivery partner/agent)
+# Exception for legitimate OTP sharing: only when shared WITH that person
 SAFE_OTP_EXCEPTION = re.compile(
-    r"\b(shar(e|ing)?|tell|giv(e|ing)|provid(e|ing)|send)\b[^.\n]{0,50}\b(otp|pin|code)?\b[^.\n]{0,50}\b(driver|rider|delivery partner|delivery agent)\b|"
-    r"\b(driver|rider|delivery partner|delivery agent)\b[^.\n]{0,50}\b(shar(e|ing)?|tell|giv(e|ing)|provid(e|ing)|send)\b[^.\n]{0,50}\b(otp|pin|code)\b",
+    r"\b(shar(e|ing)?|tell|giv(e|ing)|provid(e|ing)|send)\b[^.\n]{0,50}\bwith (the|your) (driver|rider|delivery partner|delivery agent)\b",
     re.IGNORECASE,
 )
 
