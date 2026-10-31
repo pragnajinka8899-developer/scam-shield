@@ -31,7 +31,8 @@ RULES = [
         "Suspicious or shortened link",
         25,
         r"(bit\.ly|tinyurl\.com|cutt\.ly|is\.gd|goo\.gl|t\.co/|"
-        r"https?://\S*\.(xyz|top|click|icu|live|info|site)\b|https?://\d{1,3}(\.\d{1,3}){3})",
+        r"\b(?:https?://\S*|\b)[\w.-]+\.(xyz|top|click|icu|live|info|site)\b|"
+        r"https?://\d{1,3}(\.\d{1,3}){3})",
     ),
     (
         "Demands payment or money transfer",
@@ -57,7 +58,7 @@ RULES = [
     ),
     (
         "Fake authority threat",
-        25,
+        30,
         r"\b(cbi|narcotics|arrest warrant|digital arrest|cyber ?crime|income tax (department|dept))\b",
     ),
     (
@@ -89,6 +90,13 @@ SAFE_WARNING = re.compile(
     r"\b(do not|don't|dont|never|not to)\s+(share|disclose|give|reveal)\b[^.\n]*", re.IGNORECASE
 )
 
+# Exception for legitimate OTP sharing (e.g., driver, rider, delivery partner/agent)
+SAFE_OTP_EXCEPTION = re.compile(
+    r"\b(shar(e|ing)?|tell|giv(e|ing)|provid(e|ing)|send)\b[^.\n]{0,50}\b(otp|pin|code)?\b[^.\n]{0,50}\b(driver|rider|delivery partner|delivery agent)\b|"
+    r"\b(driver|rider|delivery partner|delivery agent)\b[^.\n]{0,50}\b(shar(e|ing)?|tell|giv(e|ing)|provid(e|ing)|send)\b[^.\n]{0,50}\b(otp|pin|code)\b",
+    re.IGNORECASE,
+)
+
 HIGH, SUSPICIOUS = 50, 25
 
 
@@ -97,6 +105,8 @@ def analyze(text):
     cleaned = SAFE_WARNING.sub("", text.lower())
     flags, score = [], 0
     for name, weight, pattern in RULES:
+        if name == "Asks for OTP / PIN / password" and SAFE_OTP_EXCEPTION.search(cleaned):
+            continue
         m = re.search(pattern, cleaned, re.IGNORECASE)
         if m:
             flags.append({"flag": name, "match": m.group(0)})
