@@ -156,7 +156,7 @@ if (check_clicked or choice != "(write your own)") and text.strip():
 
     st.subheader("👨‍👩‍👧‍👦 Warn My Family (One-Tap Copy)")
     st.caption("Send this pre-drafted message to family or group chats:")
-    st.code(info["family_message"], language=None)
+    st.code(info["family_message"], language=None, wrap_lines=True)
 
     who = f"{MODEL} via Ollama" if info.get("source") == "model" else "built-in safety rules"
     st.caption(f"Explanation generated locally by {who}. Scam Shield is an assistant, not a guarantee.")
